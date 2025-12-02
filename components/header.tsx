@@ -14,6 +14,12 @@ export function Header() {
             首页
           </Link>
           <Link
+            href="/guide"
+            className="text-sm font-medium text-muted-foreground transition-colors hover:text-foreground"
+          >
+            使用说明
+          </Link>
+          <Link
             href="/about"
             className="text-sm font-medium text-muted-foreground transition-colors hover:text-foreground"
           >
