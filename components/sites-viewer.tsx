@@ -27,6 +27,7 @@ interface Site {
   bgType: string
   initials: string
   parentId: string
+  children?: Site[]
 }
 
 interface InfinityBackupData {
@@ -72,6 +73,18 @@ export function SitesViewer() {
           return
         }
 
+        parsed.data.site.sites.forEach((page) => {
+          page.forEach((site) => {
+            if (site.id.startsWith("folderId-") && site.children && Array.isArray(site.children)) {
+              site.children.forEach((child) => {
+                if (!child.parentId) {
+                  child.parentId = site.id
+                }
+              })
+            }
+          })
+        })
+
         setSitesData(parsed)
         setFileName(file.name)
         setImportError(null)
@@ -99,21 +112,62 @@ export function SitesViewer() {
     return sitesData.data.site.sites.flat()
   }, [sitesData])
 
-  const filteredSites = useMemo(() => {
-    return allSites.filter((site) => {
-      const matchesSearch =
-        site.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        site.target.toLowerCase().includes(searchQuery.toLowerCase())
-      const matchesType = selectedTypes.includes(site.type)
-      return matchesSearch && matchesType
-    })
-  }, [allSites, searchQuery, selectedTypes])
+  const allExportableSites = useMemo(() => {
+    const sites: { name: string; url: string; updatetime: number; folderName?: string }[] = []
 
-  const webSites = useMemo(() => {
-    return allSites.filter((site) => site.type === "web" && site.target.startsWith("http"))
+    const folderMap = new Map<string, string>()
+    allSites.forEach((site) => {
+      if (site.id.startsWith("folderId-")) {
+        folderMap.set(site.id, site.name)
+      }
+    })
+
+    allSites.forEach((site) => {
+      const isFolder = site.id.startsWith("folderId-")
+
+      if (!isFolder && site.target && site.target.startsWith("http")) {
+        const folderName = site.parentId ? folderMap.get(site.parentId) : undefined
+        sites.push({
+          name: site.name,
+          url: site.target,
+          updatetime: site.updatetime,
+          folderName: folderName,
+        })
+      }
+
+      // 处理文件夹内的子站点 (children 数组)
+      if (isFolder && site.children && Array.isArray(site.children)) {
+        site.children.forEach((child) => {
+          if (child.target && child.target.startsWith("http")) {
+            sites.push({
+              name: child.name,
+              url: child.target,
+              updatetime: child.updatetime || site.updatetime,
+              folderName: site.name,
+            })
+          }
+        })
+      }
+    })
+
+    return sites
   }, [allSites])
 
-  const generateChromeBookmarksHTML = () => {
+  const groupedSites = useMemo(() => {
+    const groups: { [key: string]: typeof allExportableSites } = {}
+
+    allExportableSites.forEach((site) => {
+      const folder = site.folderName || "__root__"
+      if (!groups[folder]) {
+        groups[folder] = []
+      }
+      groups[folder].push(site)
+    })
+
+    return groups
+  }, [allExportableSites])
+
+  const handleExportToChrome = () => {
     const now = Math.floor(Date.now() / 1000)
 
     let html = `<!DOCTYPE NETSCAPE-Bookmark-file-1>
@@ -128,24 +182,51 @@ export function SitesViewer() {
     <DL><p>
 `
 
-    webSites.forEach((site) => {
-      const addDate = Math.floor(site.updatetime / 1000)
-      html += `        <DT><A HREF="${site.target}" ADD_DATE="${addDate}" ICON="">${site.name}</A>\n`
+    const rootSites = groupedSites["__root__"] || []
+    rootSites.forEach((site) => {
+      const addDate = site.updatetime ? Math.floor(site.updatetime / 1000) : now
+      const escapedName = site.name
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+      const escapedUrl = site.url.replace(/&/g, "&amp;").replace(/"/g, "&quot;")
+      html += `        <DT><A HREF="${escapedUrl}" ADD_DATE="${addDate}">${escapedName}</A>\n`
+    })
+
+    Object.entries(groupedSites).forEach(([folderName, folderSites]) => {
+      if (folderName === "__root__") return
+
+      const escapedFolderName = folderName
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+      html += `        <DT><H3 ADD_DATE="${now}" LAST_MODIFIED="${now}">${escapedFolderName}</H3>\n`
+      html += `        <DL><p>\n`
+
+      folderSites.forEach((site) => {
+        const addDate = site.updatetime ? Math.floor(site.updatetime / 1000) : now
+        const escapedName = site.name
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;")
+        const escapedUrl = site.url.replace(/&/g, "&amp;").replace(/"/g, "&quot;")
+        html += `            <DT><A HREF="${escapedUrl}" ADD_DATE="${addDate}">${escapedName}</A>\n`
+      })
+
+      html += `        </DL><p>\n`
     })
 
     html += `    </DL><p>
 </DL><p>`
 
-    return html
-  }
-
-  const handleExportToChrome = () => {
-    const html = generateChromeBookmarksHTML()
     const blob = new Blob([html], { type: "text/html;charset=utf-8" })
     const url = URL.createObjectURL(blob)
     const link = document.createElement("a")
     link.href = url
-    link.download = "chrome_bookmarks.html"
+    link.download = `infinity-bookmarks-${new Date().toISOString().split("T")[0]}.html`
     document.body.appendChild(link)
     link.click()
     document.body.removeChild(link)
@@ -160,7 +241,8 @@ export function SitesViewer() {
     total: allSites.length,
     web: allSites.filter((s) => s.type === "web").length,
     app: allSites.filter((s) => s.type === "app").length,
-    folder: allSites.filter((s) => s.type === "folder").length,
+    folder: allSites.filter((s) => s.id.startsWith("folderId-")).length,
+    exportable: allExportableSites.length,
   }
 
   const pageCount = sitesData?.data.site.sites.length || 0
@@ -168,7 +250,6 @@ export function SitesViewer() {
   return (
     <div className="min-h-screen bg-background p-4 md:p-8">
       <div className="max-w-4xl mx-auto space-y-6">
-        {/* Header */}
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
           <div className="flex items-center gap-3">
             <ExternalLink className="h-8 w-8 text-primary" />
@@ -189,13 +270,12 @@ export function SitesViewer() {
             {allSites.length > 0 && (
               <Button onClick={handleExportToChrome} className="gap-2 shrink-0">
                 <Download className="h-4 w-4" />
-                导出到 Chrome 书签
+                导出书签 ({allExportableSites.length})
               </Button>
             )}
           </div>
         </div>
 
-        {/* Disclaimer Alert */}
         <Alert className="mb-8" variant="default">
           <AlertTriangle className="h-4 w-4" />
           <AlertTitle>免责声明</AlertTitle>
@@ -259,7 +339,6 @@ export function SitesViewer() {
           </CardContent>
         </Card>
 
-        {/* Show placeholder when no data */}
         {!sitesData ? (
           <Card className="text-center py-12">
             <CardContent>
@@ -270,7 +349,6 @@ export function SitesViewer() {
           </Card>
         ) : (
           <>
-            {/* Stats Cards */}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
               <Card>
                 <CardHeader className="pb-2">
@@ -298,7 +376,6 @@ export function SitesViewer() {
               </Card>
             </div>
 
-            {/* Toolbar */}
             <div className="flex flex-col md:flex-row gap-4 mb-6">
               <div className="relative flex-1">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
@@ -343,10 +420,9 @@ export function SitesViewer() {
               </div>
             </div>
 
-            {/* Sites List */}
             <Tabs defaultValue="all" className="w-full">
               <TabsList className="mb-4 flex-wrap h-auto gap-1">
-                <TabsTrigger value="all">全部 ({filteredSites.length})</TabsTrigger>
+                <TabsTrigger value="all">全部 ({allExportableSites.length})</TabsTrigger>
                 {Array.from({ length: pageCount }, (_, i) => (
                   <TabsTrigger key={i} value={`page${i + 1}`}>
                     页面 {i + 1}
@@ -357,15 +433,15 @@ export function SitesViewer() {
               <TabsContent value="all">
                 {viewMode === "grid" ? (
                   <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-4">
-                    {filteredSites.map((site) => (
-                      <SiteCard key={site.id} site={site} />
+                    {allExportableSites.map((site) => (
+                      <SiteCard key={site.url} site={site} />
                     ))}
                   </div>
                 ) : (
                   <ScrollArea className="h-[300px]">
                     <div className="space-y-2">
-                      {filteredSites.map((site) => (
-                        <SiteListItem key={site.id} site={site} />
+                      {allExportableSites.map((site) => (
+                        <SiteListItem key={site.url} site={site} />
                       ))}
                     </div>
                   </ScrollArea>
@@ -407,7 +483,7 @@ export function SitesViewer() {
               ))}
             </Tabs>
 
-            {filteredSites.length === 0 && (
+            {allExportableSites.length === 0 && (
               <div className="text-center py-12 text-muted-foreground">
                 <p>没有找到匹配的站点</p>
               </div>
@@ -419,41 +495,28 @@ export function SitesViewer() {
   )
 }
 
-function SiteCard({ site }: { site: Site }) {
-  const isClickable = site.target.startsWith("http")
+function SiteCard({ site }: { site: { name: string; url: string; updatetime: number; folderName?: string } }) {
+  const isClickable = site.url.startsWith("http")
 
   return (
     <Card
       className={`group overflow-hidden transition-all hover:shadow-md ${isClickable ? "cursor-pointer" : ""}`}
-      onClick={() => isClickable && window.open(site.target, "_blank")}
+      onClick={() => isClickable && window.open(site.url, "_blank")}
     >
       <CardContent className="p-4">
         <div className="flex flex-col items-center text-center gap-3">
           <div
             className="w-12 h-12 rounded-xl flex items-center justify-center overflow-hidden"
-            style={{ backgroundColor: site.bgColor || "#f0f0f0" }}
+            style={{ backgroundColor: "#f0f0f0" }}
           >
-            {site.bgImage ? (
-              <img
-                src={site.bgImage || "/placeholder.svg"}
-                alt={site.name}
-                className="w-full h-full object-cover"
-                onError={(e) => {
-                  e.currentTarget.style.display = "none"
-                }}
-              />
-            ) : (
-              <span className="text-lg font-bold text-white">{site.initials}</span>
-            )}
+            <span className="text-lg font-bold text-white">{site.folderName ? site.folderName[0] : site.name[0]}</span>
           </div>
           <div className="w-full">
             <p className="font-medium text-sm truncate" title={site.name}>
               {site.name}
             </p>
             <Badge variant="outline" className="mt-1 text-xs">
-              {site.type === "web" && "网站"}
-              {site.type === "app" && "应用"}
-              {site.type === "folder" && "文件夹"}
+              {site.folderName ? "文件夹" : "网站"}
             </Badge>
           </div>
         </div>
@@ -462,41 +525,28 @@ function SiteCard({ site }: { site: Site }) {
   )
 }
 
-function SiteListItem({ site }: { site: Site }) {
-  const isClickable = site.target.startsWith("http")
+function SiteListItem({ site }: { site: { name: string; url: string; updatetime: number; folderName?: string } }) {
+  const isClickable = site.url.startsWith("http")
 
   return (
     <Card
       className={`transition-all hover:shadow-sm ${isClickable ? "cursor-pointer" : ""}`}
-      onClick={() => isClickable && window.open(site.target, "_blank")}
+      onClick={() => isClickable && window.open(site.url, "_blank")}
     >
       <CardContent className="p-3">
         <div className="flex items-center gap-4">
           <div
             className="w-10 h-10 rounded-lg flex items-center justify-center overflow-hidden shrink-0"
-            style={{ backgroundColor: site.bgColor || "#f0f0f0" }}
+            style={{ backgroundColor: "#f0f0f0" }}
           >
-            {site.bgImage ? (
-              <img
-                src={site.bgImage || "/placeholder.svg"}
-                alt={site.name}
-                className="w-full h-full object-cover"
-                onError={(e) => {
-                  e.currentTarget.style.display = "none"
-                }}
-              />
-            ) : (
-              <span className="text-sm font-bold text-white">{site.initials}</span>
-            )}
+            <span className="text-sm font-bold text-white">{site.folderName ? site.folderName[0] : site.name[0]}</span>
           </div>
           <div className="flex-1 min-w-0">
             <p className="font-medium truncate">{site.name}</p>
-            <p className="text-sm text-muted-foreground truncate">{site.target}</p>
+            <p className="text-sm text-muted-foreground truncate">{site.url}</p>
           </div>
           <Badge variant="outline" className="shrink-0">
-            {site.type === "web" && "网站"}
-            {site.type === "app" && "应用"}
-            {site.type === "folder" && "文件夹"}
+            {site.folderName ? "文件夹" : "网站"}
           </Badge>
           {isClickable && <ExternalLink className="h-4 w-4 text-muted-foreground shrink-0" />}
         </div>
