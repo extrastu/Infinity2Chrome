@@ -34,13 +34,13 @@
 
 ## 本地开发
 
-\`\`\`bash
+```bash
 # 安装依赖
 npm install
 
 # 启动开发服务器
 npm run dev
-\`\`\`
+```
 
 ## 相关链接
 
@@ -55,7 +55,7 @@ npm run dev
 
 本工具仅提供数据格式转换功能，不对用户数据的完整性和安全性负责。请在使用前妥善备份原始数据。
 
-\`\`\`text file="LICENSE"
+```text file="LICENSE"
 MIT License
 
 Copyright (c) 2025 Infinity2Chrome
